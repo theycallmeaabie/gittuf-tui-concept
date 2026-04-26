@@ -43,6 +43,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
 		h, v := lipgloss.NewStyle().Margin(1, 2).GetFrameSize()
 		m.choiceList.SetSize(msg.Width-h, msg.Height-v)
 		m.policyScreenList.SetSize(msg.Width-h, msg.Height-v)
@@ -68,9 +70,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "esc":
 			m.footer = ""
+			m.errorMsg = ""
 			switch m.screen {
-			case screenPolicy, screenTrust:
+			case screenPolicy, screenTrust, screenMockVerify:
 				m.screen = screenChoice
+			case screenMockPolicy:
+				m.screen = screenPolicy
+			case screenMockTrust:
+				m.screen = screenTrust
 			case screenPolicyRules:
 				m.screen = screenPolicy
 			case screenPolicyAddRule, screenPolicyEditRule:
@@ -79,6 +86,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.screen = screenTrust
 			case screenTrustAddGlobalRule, screenTrustEditGlobalRule:
 				m.screen = screenTrustGlobalRules
+			case screenKeyDetail:
+				m.screen = screenMockTrust
 			}
 			return m, nil
 		}
@@ -89,6 +98,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				return m.handleEnter()
 			}
+		case screenMockTrust:
+			return m.handleMockTrustKey(msg.String())
+		case screenMockVerify:
+			return m.handleMockVerifyKey(msg.String())
 		case screenPolicyRules, screenTrustGlobalRules:
 			return m.handleRulesListKey(msg)
 		case screenPolicyAddRule, screenPolicyEditRule:
@@ -139,17 +152,63 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 				m.screen = screenPolicy
 			case "Trust":
 				m.screen = screenTrust
+			case "Verify Ref":
+				m.verifyIdx = 0
+				m.screen = screenMockVerify
 			}
 		}
 	case screenPolicy:
-		if _, ok := m.policyScreenList.SelectedItem().(item); ok {
-			m.screen = screenPolicyRules
-			m.refreshRules()
+		if sel, ok := m.policyScreenList.SelectedItem().(item); ok {
+			switch sel.title {
+			case "View Rules":
+				m.screen = screenPolicyRules
+				m.refreshRules()
+			case "View Branch Protection":
+				m.screen = screenMockPolicy
+			}
 		}
 	case screenTrust:
-		if _, ok := m.trustScreenList.SelectedItem().(item); ok {
-			m.screen = screenTrustGlobalRules
-			m.refreshGlobalRules()
+		if sel, ok := m.trustScreenList.SelectedItem().(item); ok {
+			switch sel.title {
+			case "View Global Rules":
+				m.screen = screenTrustGlobalRules
+				m.refreshGlobalRules()
+			case "View Trusted Keys":
+				m.trustKeyIdx = 0
+				m.screen = screenMockTrust
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleMockTrustKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.trustKeyIdx > 0 {
+			m.trustKeyIdx--
+		}
+	case "down", "j":
+		if m.trustKeyIdx < len(mockTrustedKeys)-1 {
+			m.trustKeyIdx++
+		}
+	case "enter":
+		if len(mockTrustedKeys) > 0 {
+			m.screen = screenKeyDetail
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleMockVerifyKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.verifyIdx > 0 {
+			m.verifyIdx--
+		}
+	case "down", "j":
+		if m.verifyIdx < len(mockVerifyCases)-1 {
+			m.verifyIdx++
 		}
 	}
 	return m, nil

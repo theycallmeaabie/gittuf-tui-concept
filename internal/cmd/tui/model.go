@@ -32,20 +32,20 @@ const (
 	screenTrustGlobalRules                  // Global rule management screen
 	screenTrustAddGlobalRule                // Form: add a new global rule
 	screenTrustEditGlobalRule               // Form: edit selected global rule (prefilled)
+	screenMockTrust
+	screenMockPolicy
+	screenKeyDetail
+	screenMockVerify
 )
 
+// item is what we hand to bubbles/list. The list package needs these three
+// methods; nothing else is going on here.
 type item struct {
 	title, desc string
 }
 
-// Note: virtual methods must be implemented for the item struct
-// Title returns the title of the item.
-func (i item) Title() string { return i.title }
-
-// Description returns the description of the item.
+func (i item) Title() string       { return i.title }
 func (i item) Description() string { return i.desc }
-
-// FilterValue returns the value to filter on.
 func (i item) FilterValue() string { return i.title }
 
 type model struct {
@@ -71,9 +71,17 @@ type model struct {
 	readOnly         bool
 	confirmDelete    bool
 	deleteTarget     string
+
+	trustKeyIdx int
+	verifyIdx   int
+
+	width  int
+	height int
 }
 
-// initDoneMsg carries the result of the asynchronous TUI initialization.
+// initDoneMsg is sent back from loadRepoCmd once the repo, signer and rules
+// have finished loading (or failed). The Update loop swaps the loading screen
+// for the real menu when this lands.
 type initDoneMsg struct {
 	repo        *gittuf.Repository
 	signer      dsse.SignerVerifier
@@ -84,13 +92,11 @@ type initDoneMsg struct {
 	err         error
 }
 
-// inputField describes a single text input's placeholder and prompt label.
 type inputField struct {
 	placeholder string
 	prompt      string
 }
 
-// newDelegate creates a styled list delegate for use in all list.Model instances.
 func newDelegate() list.DefaultDelegate {
 	d := list.NewDefaultDelegate()
 	d.Styles.SelectedTitle = selectedItemStyle
@@ -100,7 +106,6 @@ func newDelegate() list.DefaultDelegate {
 	return d
 }
 
-// newMenuList creates a configured list.Model with default settings.
 func newMenuList(title string, items []list.Item, delegate list.DefaultDelegate) list.Model {
 	l := list.New(items, delegate, 0, 0)
 	l.Title = title
@@ -111,8 +116,8 @@ func newMenuList(title string, items []list.Item, delegate list.DefaultDelegate)
 	return l
 }
 
-// initInputs creates a slice of text inputs from field definitions.
-// The first field is focused; the rest are blurred.
+// initInputs builds the text inputs for a form. First one gets focus, the
+// rest start blurred so tab cycling has somewhere to go.
 func initInputs(fields []inputField) []textinput.Model {
 	inputs := make([]textinput.Model, len(fields))
 	for i, f := range fields {
@@ -135,8 +140,9 @@ func initInputs(fields []inputField) []textinput.Model {
 	return inputs
 }
 
-// initialModel returns a lightweight loading model for the Terminal UI.
-// All heavy work (repo I/O, signing key, rules) is deferred to loadRepoCmd.
+// initialModel just spins up the lists and a spinner so we can paint the
+// loading screen immediately. Anything that touches disk or git happens later
+// in loadRepoCmd — otherwise the first frame is noticeably slow on big repos.
 func initialModel(ctx context.Context, o *options) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -154,12 +160,15 @@ func initialModel(ctx context.Context, o *options) model {
 		choiceList: newMenuList("gittuf TUI", []list.Item{
 			item{title: "Policy", desc: "View and manage gittuf Policy"},
 			item{title: "Trust", desc: "View and manage gittuf Root of Trust"},
+			item{title: "Verify Ref", desc: "Check whether a Git ref complies with policy"},
 		}, delegate),
 		policyScreenList: newMenuList("gittuf Policy Operations", []list.Item{
 			item{title: "View Rules", desc: "View and manage policy rules"},
+			item{title: "View Branch Protection", desc: "Demo: visual summary of protected branches"},
 		}, delegate),
 		trustScreenList: newMenuList("gittuf Trust Operations", []list.Item{
 			item{title: "View Global Rules", desc: "View and manage global rules"},
+			item{title: "View Trusted Keys", desc: "Demo: root of trust + trusted signers"},
 		}, delegate),
 		ruleList:       newMenuList("Policy Rules", []list.Item{}, delegate),
 		globalRuleList: newMenuList("Global Rules", []list.Item{}, delegate),
@@ -168,13 +177,19 @@ func initialModel(ctx context.Context, o *options) model {
 	return m
 }
 
-// loadRepoCmd performs all heavy TUI initialization asynchronously and sends
-// an initDoneMsg back to the program when complete.
+// loadRepoCmd does the slow startup work off the UI thread: opening the repo,
+// loading the signing key, pulling the current rules. Result comes back as an
+// initDoneMsg.
 func loadRepoCmd(ctx context.Context, o *options) tea.Cmd {
 	return func() tea.Msg {
 		repo, err := gittuf.LoadRepository(".")
 		if err != nil {
-			return initDoneMsg{err: err}
+			// No gittuf repo in cwd — fall back to demo mode so reviewers can
+			// still poke around the mock screens without setting one up.
+			return initDoneMsg{
+				readOnly: true,
+				footer:   "Demo mode: no gittuf repository detected.",
+			}
 		}
 
 		readOnly := o.readOnly
@@ -203,12 +218,10 @@ func loadRepoCmd(ctx context.Context, o *options) tea.Cmd {
 	}
 }
 
-// Init starts the spinner tick and kicks off async repo loading.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, m.spinner.Tick, loadRepoCmd(m.ctx, m.options))
 }
 
-// initRuleInputs initializes the input fields for (policy) rule forms.
 func (m *model) initRuleInputs() {
 	m.inputs = initInputs([]inputField{
 		{"Enter Rule Name Here", "Rule Name:"},
@@ -219,7 +232,6 @@ func (m *model) initRuleInputs() {
 	m.focusIndex = 0
 }
 
-// initRuleInputsPrefilled initializes rule inputs prefilled with an existing rule's values.
 func (m *model) initRuleInputsPrefilled(r rule) {
 	m.initRuleInputs()
 	m.inputs[0].SetValue(r.name)
@@ -228,7 +240,6 @@ func (m *model) initRuleInputsPrefilled(r rule) {
 	m.inputs[3].SetValue(fmt.Sprintf("%d", r.threshold))
 }
 
-// initGlobalRuleInputs initializes the input fields for global rule forms.
 func (m *model) initGlobalRuleInputs() {
 	m.inputs = initInputs([]inputField{
 		{"Enter Global Rule Name Here", "Rule Name:"},
@@ -239,7 +250,6 @@ func (m *model) initGlobalRuleInputs() {
 	m.focusIndex = 0
 }
 
-// initGlobalRuleInputsPrefilled initializes global rule inputs prefilled with an existing global rule's values.
 func (m *model) initGlobalRuleInputsPrefilled(gr globalRule) {
 	m.initGlobalRuleInputs()
 	m.inputs[0].SetValue(gr.ruleName)
@@ -250,19 +260,20 @@ func (m *model) initGlobalRuleInputsPrefilled(gr globalRule) {
 	}
 }
 
-// refreshRules re-fetches rules from the repo and rebuilds the list.
+// refreshRules / refreshGlobalRules re-read from the repo after a write.
+// We always go back to disk rather than mutating the in-memory slice so the
+// list reflects whatever the policy actually is, including anything signing
+// or validation rejected.
 func (m *model) refreshRules() {
 	m.rules = getCurrRules(m.ctx, m.options)
 	m.updateRuleList()
 }
 
-// refreshGlobalRules re-fetches global rules from the repo and rebuilds the list.
 func (m *model) refreshGlobalRules() {
 	m.globalRules = getGlobalRules(m.ctx, m.options)
 	m.updateGlobalRuleList()
 }
 
-// updateRuleList updates the rule list within the TUI.
 func (m *model) updateRuleList() {
 	items := make([]list.Item, len(m.rules))
 	for i, rule := range m.rules {
@@ -271,7 +282,6 @@ func (m *model) updateRuleList() {
 	m.ruleList.SetItems(items)
 }
 
-// updateGlobalRuleList updates the global rule list within the TUI.
 func (m *model) updateGlobalRuleList() {
 	items := make([]list.Item, len(m.globalRules))
 	for i, gr := range m.globalRules {
