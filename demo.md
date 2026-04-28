@@ -1,7 +1,3 @@
-# TUI concept additions
-
-Walkthrough recording: `demo.cast` (`asciinema play demo.cast`).
-
 ## What I added
 
 - **Loading screen.** Repo load is async, spinner paints right away.
